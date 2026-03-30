@@ -1,0 +1,20 @@
+[
+  {
+    "camera_id": "CAM-NORTH-001",
+    "zone": "north-stand",
+    "max_expected_occupancy": 220,
+    "priority": "high"
+  },
+  {
+    "camera_id": "CAM-SOUTH-014",
+    "zone": "south-stand",
+    "max_expected_occupancy": 180,
+    "priority": "medium"
+  },
+  {
+    "camera_id": "CAM-EAST-007",
+    "zone": "east-gate",
+    "max_expected_occupancy": 130,
+    "priority": "high"
+  }
+]

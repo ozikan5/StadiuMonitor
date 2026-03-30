@@ -1,0 +1,128 @@
+"""
+Fake stadium cameras: generates JSON events and pushes them to Kafka.
+
+In production you'd get real counts from CV/ML on each camera feed. Here we just
+simulate plausible numbers so you can test Kafka load and downstream consumers
+without wiring up video yet.
+"""
+
+import argparse
+import json
+import os
+import random
+import signal
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List
+
+from faker import Faker
+from kafka import KafkaProducer
+
+# So Ctrl+C can exit the loop cleanly instead of hanging mid-batch.
+RUNNING = True
+fake = Faker()
+
+
+def stop_handler(signum, frame):
+    del signum, frame
+    global RUNNING
+    RUNNING = False
+
+
+def load_cameras(config_path: str, camera_count: int) -> List[Dict[str, Any]]:
+    # If you pass a JSON file, we use that as the list of cameras (zones, caps, etc.).
+    if config_path and Path(config_path).exists():
+        with open(config_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    # No file? Invent N cameras so you can still run the sim with zero setup.
+    return [
+        {
+            "camera_id": f"CAM-{idx:03d}",
+            "zone": random.choice(["north-stand", "south-stand", "east-gate", "west-gate", "concourse"]),
+            "max_expected_occupancy": random.randint(80, 260),
+            "priority": random.choice(["high", "medium", "low"]),
+        }
+        for idx in range(1, camera_count + 1)
+    ]
+
+
+def generate_event(camera: Dict[str, Any]) -> Dict[str, Any]:
+    # Rough bell curve around "a bit over half full" — feels more natural than flat random.
+    max_occ = camera.get("max_expected_occupancy", 120)
+    people_count = max(0, int(random.gauss(max_occ * 0.55, max_occ * 0.2)))
+    confidence = round(random.uniform(0.78, 0.99), 3)
+
+    return {
+        "event_id": fake.uuid4(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "camera_id": camera["camera_id"],
+        "zone": camera["zone"],
+        "priority": camera.get("priority", "medium"),
+        "people_count": min(people_count, max_occ + random.randint(0, 15)),
+        "max_expected_occupancy": max_occ,
+        "estimated_queue_length": max(0, people_count - int(max_occ * 0.8)),
+        "detection_confidence": confidence,
+    }
+
+
+def build_producer(bootstrap_servers: str) -> KafkaProducer:
+    # bootstrap_servers is where Kafka listens (your docker-compose maps 9092 on localhost).
+    # Key = camera_id so related events can land in the same partition if you scale later.
+    return KafkaProducer(
+        bootstrap_servers=bootstrap_servers,
+        value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+        key_serializer=lambda k: k.encode("utf-8"),
+        linger_ms=20,
+    )
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Stadium camera data simulator")
+    parser.add_argument("--bootstrap-servers", default=os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092"))
+    parser.add_argument("--topic", default=os.getenv("KAFKA_TOPIC", "stadium.camera.events"))
+    parser.add_argument("--config", default=os.getenv("CAMERA_CONFIG", "simulator/config/cameras.example.json"))
+    parser.add_argument("--camera-count", type=int, default=int(os.getenv("CAMERA_COUNT", "50")))
+    parser.add_argument("--events-per-second", type=float, default=float(os.getenv("EVENTS_PER_SECOND", "20")))
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    # Spread events evenly across the second (20 eps → sleep ~0.05s between sends).
+    interval = 1.0 / max(args.events_per_second, 0.1)
+    cameras = load_cameras(args.config, args.camera_count)
+
+    signal.signal(signal.SIGINT, stop_handler)
+    signal.signal(signal.SIGTERM, stop_handler)
+
+    producer = build_producer(args.bootstrap_servers)
+    print(
+        f"Producing events to topic='{args.topic}' on {args.bootstrap_servers} "
+        f"from {len(cameras)} cameras at ~{args.events_per_second} eps"
+    )
+
+    produced = 0
+    try:
+        while RUNNING:
+            # Pick a random camera each tick — mimics many feeds reporting at different times.
+            camera = random.choice(cameras)
+            event = generate_event(camera)
+            producer.send(args.topic, key=event["camera_id"], value=event)
+            produced += 1
+
+            # Flush occasionally so you don't buffer forever if the process dies.
+            if produced % 200 == 0:
+                producer.flush()
+                print(f"Produced {produced} events...")
+
+            time.sleep(interval)
+    finally:
+        producer.flush()
+        producer.close()
+        print(f"Stopped producer. Total events produced: {produced}")
+
+
+if __name__ == "__main__":
+    main()

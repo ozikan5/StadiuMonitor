@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.venv/
+venv/
+.env
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Logs and runtime
+*.log
+*.pid
+.tmp/
+
+# Kafka local data
+kafka-data/
+zookeeper-data/
+
+# Build / test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
