@@ -11,6 +11,7 @@ import json
 import os
 import random
 import signal
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,6 +19,11 @@ from typing import Any, Dict, List
 
 from faker import Faker
 from kafka import KafkaProducer
+
+_REPO = Path(__file__).resolve().parents[2]
+if str(_REPO) not in sys.path:
+    sys.path.insert(0, str(_REPO))
+from shared.kafka_config import kafka_settings
 
 # So Ctrl+C can exit the loop cleanly instead of hanging mid-batch.
 RUNNING = True
@@ -67,21 +73,28 @@ def generate_event(camera: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def build_producer(bootstrap_servers: str) -> KafkaProducer:
+def build_producer(bootstrap_servers: str, linger_ms: int) -> KafkaProducer:
     # bootstrap_servers is where Kafka listens (your docker-compose maps 9092 on localhost).
     # Key = camera_id so related events can land in the same partition if you scale later.
     return KafkaProducer(
         bootstrap_servers=bootstrap_servers,
         value_serializer=lambda v: json.dumps(v).encode("utf-8"),
         key_serializer=lambda k: k.encode("utf-8"),
-        linger_ms=20,
+        linger_ms=linger_ms,
     )
 
 
 def parse_args() -> argparse.Namespace:
+    ks = kafka_settings()
     parser = argparse.ArgumentParser(description="Stadium camera data simulator")
-    parser.add_argument("--bootstrap-servers", default=os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092"))
-    parser.add_argument("--topic", default=os.getenv("KAFKA_TOPIC", "stadium.camera.events"))
+    parser.add_argument("--bootstrap-servers", default=ks["bootstrap_servers"])
+    parser.add_argument("--topic", default=ks["topic"])
+    parser.add_argument(
+        "--producer-linger-ms",
+        type=int,
+        default=ks["producer_linger_ms"],
+        help="Kafka producer batching delay (see shared/kafka_config.py)",
+    )
     parser.add_argument("--config", default=os.getenv("CAMERA_CONFIG", "simulator/config/cameras.example.json"))
     parser.add_argument("--camera-count", type=int, default=int(os.getenv("CAMERA_COUNT", "50")))
     parser.add_argument("--events-per-second", type=float, default=float(os.getenv("EVENTS_PER_SECOND", "20")))
@@ -97,7 +110,7 @@ def main() -> None:
     signal.signal(signal.SIGINT, stop_handler)
     signal.signal(signal.SIGTERM, stop_handler)
 
-    producer = build_producer(args.bootstrap_servers)
+    producer = build_producer(args.bootstrap_servers, args.producer_linger_ms)
     print(
         f"Producing events to topic='{args.topic}' on {args.bootstrap_servers} "
         f"from {len(cameras)} cameras at ~{args.events_per_second} eps"

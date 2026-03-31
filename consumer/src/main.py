@@ -7,18 +7,25 @@ aggregations, dashboards, or staffing rules.
 """
 
 import json
-import os
+import sys
 from collections import defaultdict
+from pathlib import Path
 
 from kafka import KafkaConsumer
 
+_REPO = Path(__file__).resolve().parents[2]
+if str(_REPO) not in sys.path:
+    sys.path.insert(0, str(_REPO))
+from shared.kafka_config import kafka_settings
+
 
 def main() -> None:
-    bootstrap = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
-    topic = os.getenv("KAFKA_TOPIC", "stadium.camera.events")
+    ks = kafka_settings()
+    bootstrap = ks["bootstrap_servers"]
+    topic = ks["topic"]
     # Consumer group: Kafka remembers how far this group has read. Handy if you run
     # multiple instances later — they share the load without duplicating every message.
-    group = os.getenv("KAFKA_CONSUMER_GROUP", "stadium-ops-monitor")
+    group = ks["consumer_group"]
 
     consumer = KafkaConsumer(
         topic,

@@ -1,0 +1,8 @@
+{
+  "bootstrap_servers": "localhost:9092",
+  "topic": "stadium.camera.events",
+  "consumer_group": "stadium-ops-monitor",
+  "producer": {
+    "linger_ms": 20
+  }
+}

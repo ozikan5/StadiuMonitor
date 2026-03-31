@@ -25,3 +25,14 @@ zookeeper-data/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Local video samples (often huge)
+data/samples/*.mp4
+data/samples/*.mkv
+data/samples/*.mov
+
+# Local Kafka overrides (optional copy of kafka.example.json)
+config/kafka.json
+
+# Local video ingest overrides (optional copy of video_ingest.example.json)
+config/video_ingest.json

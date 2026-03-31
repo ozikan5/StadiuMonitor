@@ -18,8 +18,10 @@ source .venv/bin/activate
 pip install --upgrade pip
 pip install -r simulator/requirements.txt
 pip install -r consumer/requirements.txt
+pip install -r video_ingest/requirements.txt
 
 echo "Bootstrap complete."
 echo "Start Kafka:    docker compose up -d"
 echo "Run simulator:  python simulator/src/main.py --events-per-second 50 --camera-count 200"
 echo "Run consumer:   python consumer/src/main.py"
+echo "Video → Kafka:  python video_ingest/src/main.py   # uses first data/samples/*.mp4 if --video omitted"

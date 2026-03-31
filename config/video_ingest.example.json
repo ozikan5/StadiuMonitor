@@ -1,0 +1,10 @@
+{
+  "camera_id": "CAM-VIDEO-001",
+  "zone": "sample-feed",
+  "priority": "medium",
+  "max_expected_occupancy": 220,
+  "sample_fps": 2,
+  "motion_scale": 6.0,
+  "realtime": true,
+  "loop": false
+}
