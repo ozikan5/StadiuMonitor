@@ -74,6 +74,25 @@ def score_to_people_count(score: float, scale: float, max_occ: int) -> int:
     return max(0, min(raw, max_occ + 75))
 
 
+def media_time_seconds(cap: cv2.VideoCapture, frame_index: int, fps: float) -> float:
+    """Seconds from the start of the file for the current frame (best effort)."""
+    msec = cap.get(cv2.CAP_PROP_POS_MSEC)
+    if msec is not None and float(msec) > 0:
+        return float(msec) / 1000.0
+    return max(0.0, (frame_index - 1) / max(fps, 1e-6))
+
+
+def format_media_timecode(seconds: float) -> str:
+    """HH:MM:SS.mmm for correlating with players and scrubbers."""
+    if seconds < 0:
+        seconds = 0.0
+    total_ms = int(round(seconds * 1000))
+    s, ms = divmod(total_ms, 1000)
+    m, s = divmod(s, 60)
+    h, m = divmod(m, 60)
+    return f"{h:02d}:{m:02d}:{s:02d}.{ms:03d}"
+
+
 def make_event(
     *,
     camera_id: str,
@@ -159,7 +178,13 @@ def parse_args() -> argparse.Namespace:
         "--yolo-conf",
         type=float,
         default=vi["yolo_conf"],
-        help="Minimum confidence for a person box",
+        help="Final score gate after Soft-NMS / aspect filter (v3)",
+    )
+    p.add_argument(
+        "--yolo-tile-conf",
+        type=float,
+        default=vi["yolo_tile_conf"],
+        help="Per-tile YOLO conf (stricter; reduces junk before merge)",
     )
     p.add_argument(
         "--yolo-max-width",
@@ -192,10 +217,40 @@ def parse_args() -> argparse.Namespace:
         help="Overlap between tiles as a fraction of each tile size (0–0.5 typical)",
     )
     p.add_argument(
-        "--yolo-tile-nms-iou",
+        "--yolo-soft-nms-sigma",
         type=float,
-        default=vi["yolo_tile_nms_iou"],
-        help="IoU threshold to dedupe boxes across tiles",
+        default=vi["yolo_soft_nms_sigma"],
+        help="Gaussian Soft-NMS bandwidth (cross-tile dedupe)",
+    )
+    p.add_argument(
+        "--yolo-soft-nms-score-threshold",
+        type=float,
+        default=vi["yolo_soft_nms_score_threshold"],
+        help="Drop boxes decayed below this after Soft-NMS",
+    )
+    p.add_argument(
+        "--yolo-ar-min",
+        type=float,
+        default=vi["yolo_ar_min"],
+        help="Min width/height for person-shaped boxes",
+    )
+    p.add_argument(
+        "--yolo-ar-max",
+        type=float,
+        default=vi["yolo_ar_max"],
+        help="Max width/height for person-shaped boxes",
+    )
+    p.add_argument(
+        "--yolo-ar-min-height-px",
+        type=int,
+        default=vi["yolo_ar_min_height_px"],
+        help="Reject boxes shorter than this (noise)",
+    )
+    p.add_argument(
+        "--yolo-min-tile-px",
+        type=int,
+        default=vi["yolo_min_tile_px"],
+        help="Skip tiles smaller than this (each side); avoids tiny crops on dense grids",
     )
     p.add_argument(
         "--density-weights",
@@ -300,8 +355,8 @@ def main() -> None:
     yolo_dbg = ""
     if args.people_source == "yolo":
         yolo_dbg = (
-            f" | yolo conf={args.yolo_conf} imgsz={args.yolo_imgsz} max_w={args.yolo_max_width or 'full'} "
-            f"tiles={args.yolo_tile_grid}x{args.yolo_tile_grid}"
+            f" | yolo final={args.yolo_conf} tile_conf={args.yolo_tile_conf} imgsz={args.yolo_imgsz} "
+            f"max_w={args.yolo_max_width or 'full'} tiles={args.yolo_tile_grid}x{args.yolo_tile_grid}"
         )
     elif args.people_source == "density":
         yolo_dbg = (
@@ -347,18 +402,25 @@ def main() -> None:
 
             if args.people_source == "yolo":
                 assert yolo_model is not None and device is not None
-                people, det_conf = count_people(
+                yolo_res = count_people(
                     yolo_model,
                     frame,
                     device=device,
                     conf=args.yolo_conf,
+                    tile_conf=args.yolo_tile_conf,
                     max_width=max_w,
                     imgsz=args.yolo_imgsz,
                     tile_grid=args.yolo_tile_grid,
                     tile_overlap=args.yolo_tile_overlap,
-                    tile_nms_iou=args.yolo_tile_nms_iou,
+                    soft_nms_sigma=args.yolo_soft_nms_sigma,
+                    soft_nms_score_threshold=args.yolo_soft_nms_score_threshold,
+                    ar_min=args.yolo_ar_min,
+                    ar_max=args.yolo_ar_max,
+                    ar_min_height_px=args.yolo_ar_min_height_px,
+                    min_tile_px=args.yolo_min_tile_px,
                 )
-                conf = det_conf if people > 0 else 0.0
+                people = yolo_res.count
+                conf = yolo_res.mean_conf if people > 0 else 0.0
                 ingest_mode = "yolo"
             elif args.people_source == "density":
                 assert density_model is not None and torch_device is not None
@@ -393,6 +455,9 @@ def main() -> None:
                 confidence=conf,
                 ingest_mode=ingest_mode,
             )
+            t_media = media_time_seconds(cap, frame_index, fps)
+            event["video_time_sec"] = round(t_media, 3)
+            event["video_timecode"] = format_media_timecode(t_media)
             if density_raw_sum is not None:
                 event["density_raw_sum"] = round(density_raw_sum, 3)
                 event["density_calibration"] = args.density_calibration
@@ -406,7 +471,7 @@ def main() -> None:
                     extra = f"people≈{people} raw_sum≈{density_raw_sum:.1f} cal={args.density_calibration}"
                 else:
                     extra = f"people={people} motion"
-                print(f"Emitted {emitted} events ({extra})")
+                print(f"Emitted {emitted} events ({extra}) @ video {format_media_timecode(t_media)}")
 
         producer.flush()
     finally:

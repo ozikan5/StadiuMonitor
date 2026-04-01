@@ -46,14 +46,17 @@ def main() -> None:
         people = int(payload.get("people_count", 0))
         zone_counts[zone] = people
 
+        vtc = payload.get("video_timecode")
+        media = f" video={vtc}" if vtc else ""
+
         # Crude threshold: more people than this camera's configured cap.
         if people > payload.get("max_expected_occupancy", 0):
             print(
                 "[ALERT] Occupancy threshold exceeded "
-                f"camera={payload.get('camera_id')} zone={zone} people={people}"
+                f"camera={payload.get('camera_id')} zone={zone} people={people}{media}"
             )
         else:
-            print(f"[EVENT] camera={payload.get('camera_id')} zone={zone} people={people}")
+            print(f"[EVENT] camera={payload.get('camera_id')} zone={zone} people={people}{media}")
 
 
 if __name__ == "__main__":

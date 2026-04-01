@@ -30,6 +30,7 @@ htmlcov/
 data/samples/*.mp4
 data/samples/*.mkv
 data/samples/*.mov
+data/samples/*.avi
 
 # Local Kafka overrides (optional copy of kafka.example.json)
 config/kafka.json

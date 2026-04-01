@@ -67,7 +67,14 @@ def video_ingest_settings() -> Dict[str, Any]:
     if os.getenv("VIDEO_YOLO_CONF") is not None:
         yolo_conf = float(os.environ["VIDEO_YOLO_CONF"])
     else:
-        yolo_conf = float(cfg.get("yolo_conf", 0.15))
+        # Final gate after Soft-NMS (lower than tile_conf is normal).
+        yolo_conf = float(cfg.get("yolo_conf", 0.30))
+
+    if os.getenv("VIDEO_YOLO_TILE_CONF") is not None:
+        yolo_tile_conf = float(os.environ["VIDEO_YOLO_TILE_CONF"])
+    else:
+        # Must stay modest: Ultralytics conf=0.5 drops most marginal people in crowds.
+        yolo_tile_conf = float(cfg.get("yolo_tile_conf", 0.22))
 
     if os.getenv("VIDEO_YOLO_MAX_WIDTH") is not None:
         yolo_max_width = int(os.environ["VIDEO_YOLO_MAX_WIDTH"])
@@ -94,10 +101,35 @@ def video_ingest_settings() -> Dict[str, Any]:
     else:
         yolo_tile_overlap = float(cfg.get("yolo_tile_overlap", 0.25))
 
-    if os.getenv("VIDEO_YOLO_TILE_NMS_IOU") is not None:
-        yolo_tile_nms_iou = float(os.environ["VIDEO_YOLO_TILE_NMS_IOU"])
+    if os.getenv("VIDEO_YOLO_SOFT_NMS_SIGMA") is not None:
+        yolo_soft_nms_sigma = float(os.environ["VIDEO_YOLO_SOFT_NMS_SIGMA"])
     else:
-        yolo_tile_nms_iou = float(cfg.get("yolo_tile_nms_iou", 0.45))
+        yolo_soft_nms_sigma = float(cfg.get("yolo_soft_nms_sigma", 0.65))
+
+    if os.getenv("VIDEO_YOLO_SOFT_NMS_SCORE_THRESHOLD") is not None:
+        yolo_soft_nms_score_threshold = float(os.environ["VIDEO_YOLO_SOFT_NMS_SCORE_THRESHOLD"])
+    else:
+        yolo_soft_nms_score_threshold = float(cfg.get("yolo_soft_nms_score_threshold", 0.001))
+
+    if os.getenv("VIDEO_YOLO_AR_MIN") is not None:
+        yolo_ar_min = float(os.environ["VIDEO_YOLO_AR_MIN"])
+    else:
+        yolo_ar_min = float(cfg.get("yolo_ar_min", 0.15))
+
+    if os.getenv("VIDEO_YOLO_AR_MAX") is not None:
+        yolo_ar_max = float(os.environ["VIDEO_YOLO_AR_MAX"])
+    else:
+        yolo_ar_max = float(cfg.get("yolo_ar_max", 0.80))
+
+    if os.getenv("VIDEO_YOLO_AR_MIN_HEIGHT_PX") is not None:
+        yolo_ar_min_height_px = int(os.environ["VIDEO_YOLO_AR_MIN_HEIGHT_PX"])
+    else:
+        yolo_ar_min_height_px = int(cfg.get("yolo_ar_min_height_px", 12))
+
+    if os.getenv("VIDEO_YOLO_MIN_TILE_PX") is not None:
+        yolo_min_tile_px = int(os.environ["VIDEO_YOLO_MIN_TILE_PX"])
+    else:
+        yolo_min_tile_px = int(cfg.get("yolo_min_tile_px", 64))
 
     density_weights = (os.getenv("VIDEO_DENSITY_WEIGHTS") or cfg.get("density_weights") or "").strip()
     if os.getenv("VIDEO_DENSITY_MAX_SIDE") is not None:
@@ -127,12 +159,18 @@ def video_ingest_settings() -> Dict[str, Any]:
         "people_source": people_source,
         "yolo_model": yolo_model,
         "yolo_conf": yolo_conf,
+        "yolo_tile_conf": yolo_tile_conf,
         "yolo_max_width": yolo_max_width,
         "yolo_imgsz": yolo_imgsz,
         "yolo_device": yolo_device,
         "yolo_tile_grid": yolo_tile_grid,
         "yolo_tile_overlap": yolo_tile_overlap,
-        "yolo_tile_nms_iou": yolo_tile_nms_iou,
+        "yolo_soft_nms_sigma": yolo_soft_nms_sigma,
+        "yolo_soft_nms_score_threshold": yolo_soft_nms_score_threshold,
+        "yolo_ar_min": yolo_ar_min,
+        "yolo_ar_max": yolo_ar_max,
+        "yolo_ar_min_height_px": yolo_ar_min_height_px,
+        "yolo_min_tile_px": yolo_min_tile_px,
         "density_weights": density_weights,
         "density_max_side": density_max_side,
         "density_gdrive_id": density_gdrive_id,

@@ -50,6 +50,22 @@ def _append_ingest(cmd: List[str], ingest: Dict[str, Any]) -> None:
         cmd.append("--realtime" if ingest["realtime"] else "--no-realtime")
     if "loop" in ingest:
         cmd.append("--loop" if ingest["loop"] else "--no-loop")
+    if "yolo_min_tile_px" in ingest:
+        cmd.extend(["--yolo-min-tile-px", str(int(ingest["yolo_min_tile_px"]))])
+    if "yolo_conf" in ingest:
+        cmd.extend(["--yolo-conf", str(float(ingest["yolo_conf"]))])
+    if "yolo_tile_conf" in ingest:
+        cmd.extend(["--yolo-tile-conf", str(float(ingest["yolo_tile_conf"]))])
+    if "yolo_soft_nms_sigma" in ingest:
+        cmd.extend(["--yolo-soft-nms-sigma", str(float(ingest["yolo_soft_nms_sigma"]))])
+    if "yolo_soft_nms_score_threshold" in ingest:
+        cmd.extend(["--yolo-soft-nms-score-threshold", str(float(ingest["yolo_soft_nms_score_threshold"]))])
+    if "yolo_ar_min" in ingest:
+        cmd.extend(["--yolo-ar-min", str(float(ingest["yolo_ar_min"]))])
+    if "yolo_ar_max" in ingest:
+        cmd.extend(["--yolo-ar-max", str(float(ingest["yolo_ar_max"]))])
+    if "yolo_ar_min_height_px" in ingest:
+        cmd.extend(["--yolo-ar-min-height-px", str(int(ingest["yolo_ar_min_height_px"]))])
 
 
 def build_command(cam: Dict[str, Any]) -> Optional[List[str]]:

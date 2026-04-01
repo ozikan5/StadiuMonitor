@@ -94,7 +94,7 @@ python scripts/camera.py remove --id CAM-PLAZA-001
 
 - Simulator: `--config` defaults to `config/cameras.json` (env: `CAMERA_CONFIG`). If the file is **missing**, synthetic cameras are used (`CAMERA_COUNT` / `--camera-count`). If the file **exists** but has **no cameras**, the simulator exits.
 - `run_video_feeds.py` only spawns processes for cameras with `feed: { "type": "file", "path": "..." }`.
-- Optional per-camera **`ingest`** JSON keys (passed through to `video_ingest` CLI): `people_source`, `density_calibration`, `density_max_side`, `density_multi_scale`, `sample_fps`, `motion_scale`, `max_expected_occupancy`, `priority`, `realtime`, `loop`.
+- Optional per-camera **`ingest`** JSON keys (passed through to `video_ingest` CLI): `people_source`, `density_*`, `sample_fps`, `motion_scale`, `max_expected_occupancy`, `priority`, `realtime`, `loop`, and YOLO v3 fields such as `yolo_conf`, `yolo_tile_conf`, `yolo_soft_nms_sigma`, `yolo_ar_min`, `yolo_min_tile_px`, etc.
 
 `simulator/config/cameras.example.json` is a **schema example**, not the runtime default path.
 
@@ -162,13 +162,18 @@ Defaults come from `config/video_ingest*.json` and env unless overridden on the 
 | Argument | Default | Notes |
 | --- | --- | --- |
 | `--yolo-model` | from config | e.g. `yolov8n.pt` |
-| `--yolo-conf` | from config | Min box confidence |
+| `--yolo-conf` | from config | Final score gate after Soft-NMS + aspect filter |
+| `--yolo-tile-conf` | from config | Stricter conf on each tile/crop before merge |
 | `--yolo-max-width` | from config | `0` = full frame width |
 | `--yolo-imgsz` | from config | Letterbox size (e.g. 1280 for small figures) |
 | `--yolo-device` | `auto` | `auto`, `cpu`, `mps`, `cuda` |
-| `--yolo-tile-grid` | from config | `1` = off; `2` = 2×2 tiles + NMS |
+| `--yolo-tile-grid` | from config | `1` = off; `2` = 2×2 tiles |
 | `--yolo-tile-overlap` | from config | Fraction of tile size |
-| `--yolo-tile-nms-iou` | from config | Dedupe boxes across tiles |
+| `--yolo-soft-nms-sigma` | from config | Gaussian Soft-NMS across merged tiles |
+| `--yolo-soft-nms-score-threshold` | from config | Drop boxes decayed below this |
+| `--yolo-ar-min` / `--yolo-ar-max` | from config | Allowed width/height ratio band |
+| `--yolo-ar-min-height-px` | from config | Min box height (px) |
+| `--yolo-min-tile-px` | from config | Skip tiny tiles |
 
 #### When `people_source=density`
 
@@ -180,7 +185,7 @@ Defaults come from `config/video_ingest*.json` and env unless overridden on the 
 | `--density-calibration` | from config | Multiply raw density sum (tune OOD vs your venue) |
 | `--density-multi-scale` / `--no-density-multi-scale` | from config | Two-scale average (slower) |
 
-**Practical note:** YOLO counts **boxes**, not a census; wide or dense shots often read low. Tiling and lower `--yolo-conf` help. Density counts are **relative** off-domain; use `density_calibration` and larger `density_max_side` for a better match, not legal ground truth.
+**Practical note:** YOLO counts **boxes**, not a census; wide or dense shots often read low. Tiling helps; v3 uses **Soft-NMS**, **aspect-ratio** filtering, and **two-stage** conf (`tile_conf` vs final `yolo_conf`). Density counts are **relative** off-domain; use `density_calibration` and larger `density_max_side` for a better match, not legal ground truth.
 
 ---
 
