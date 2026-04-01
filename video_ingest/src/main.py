@@ -1,10 +1,11 @@
 """
-Play a video file like one camera feed: sample frames, derive a rough activity
-signal, publish the same JSON shape as simulator/src/camera_simulator.py.
+Video file → Kafka with the same event shape as the random simulator.
 
-This is a stepping stone before a real person detector (YOLO etc.): motion
-across sampled frames is not "people count," but it tracks activity changes
-and exercises the Kafka path with real pixels.
+people_source=yolo (default): YOLOv8 person boxes (+ optional tiling).
+people_source=density: CSRNet crowd density map (sum ≈ count; better for dense crowds, domain-biased).
+people_source=motion: cheap pixel-diff proxy (no heavy ML).
+
+On Apple Silicon, device=auto prefers MPS; falls back to CPU.
 """
 
 from __future__ import annotations
@@ -29,6 +30,10 @@ if str(_REPO) not in sys.path:
 from shared.kafka_config import kafka_settings
 from shared.video_ingest_config import video_ingest_settings
 
+from yolo_counter import count_people, load_yolo, resolve_device
+
+_CONF_DENSITY = 0.75
+
 RUNNING = True
 
 
@@ -39,7 +44,6 @@ def stop_handler(signum, frame):
 
 
 def project_root() -> Path:
-    # video_ingest/src/main.py -> repo root is two levels up from src
     return Path(__file__).resolve().parent.parent.parent
 
 
@@ -142,7 +146,84 @@ def parse_args() -> argparse.Namespace:
         "--motion-scale",
         type=float,
         default=vi["motion_scale"],
-        help="Higher => larger people_count from the same motion (tune per clip)",
+        help="Only for people_source=motion: scales motion → people_count",
+    )
+    p.add_argument(
+        "--people-source",
+        choices=("yolo", "motion", "density"),
+        default=vi["people_source"],
+        help="yolo = YOLOv8 boxes; density = CSRNet sum(density map); motion = pixel-diff proxy",
+    )
+    p.add_argument("--yolo-model", default=vi["yolo_model"], help="Ultralytics model name or path (.pt)")
+    p.add_argument(
+        "--yolo-conf",
+        type=float,
+        default=vi["yolo_conf"],
+        help="Minimum confidence for a person box",
+    )
+    p.add_argument(
+        "--yolo-max-width",
+        type=int,
+        default=vi["yolo_max_width"],
+        help="Max frame width before YOLO (faster if set, e.g. 960); 0 = full resolution",
+    )
+    p.add_argument(
+        "--yolo-imgsz",
+        type=int,
+        default=vi["yolo_imgsz"],
+        help="YOLO letterbox size (try 1280 for distant people; 640 is faster)",
+    )
+    p.add_argument(
+        "--yolo-device",
+        default=vi["yolo_device"],
+        choices=("auto", "cpu", "mps", "cuda"),
+        help="Inference device (auto picks MPS on Apple Silicon when available)",
+    )
+    p.add_argument(
+        "--yolo-tile-grid",
+        type=int,
+        default=vi["yolo_tile_grid"],
+        help="NxN overlapping tiles (1=off; 2=2x2, better for wide crowds; more tiles = slower)",
+    )
+    p.add_argument(
+        "--yolo-tile-overlap",
+        type=float,
+        default=vi["yolo_tile_overlap"],
+        help="Overlap between tiles as a fraction of each tile size (0–0.5 typical)",
+    )
+    p.add_argument(
+        "--yolo-tile-nms-iou",
+        type=float,
+        default=vi["yolo_tile_nms_iou"],
+        help="IoU threshold to dedupe boxes across tiles",
+    )
+    p.add_argument(
+        "--density-weights",
+        default=vi["density_weights"],
+        help="Path to CSRNet .pth (optional; if empty, downloads ShanghaiTech-A weights once)",
+    )
+    p.add_argument(
+        "--density-max-side",
+        type=int,
+        default=vi["density_max_side"],
+        help="Resize so max(h,w) <= this before CSRNet (lower = faster)",
+    )
+    p.add_argument(
+        "--density-gdrive-id",
+        default=vi["density_gdrive_id"],
+        help="Google Drive file id for CSRNet weights (default: leeyee ShanghaiTech Part A)",
+    )
+    p.add_argument(
+        "--density-calibration",
+        type=float,
+        default=vi["density_calibration"],
+        help="Multiply sum(density); tune when model is low vs reality on your cameras (default 1.0)",
+    )
+    p.add_argument(
+        "--density-multi-scale",
+        action=argparse.BooleanOptionalAction,
+        default=vi["density_multi_scale"],
+        help="Average two CSRNet passes at different resize scales (slower, sometimes higher raw_sum)",
     )
     return p.parse_args()
 
@@ -173,13 +254,64 @@ def main() -> None:
     cap, fps = open_capture(path)
     stride = max(1, int(round(fps / sample_fps)))
 
+    yolo_model = None
+    device = None
+    density_model = None
+    torch_device = None
+    _density_estimate_count = None
+
+    if args.people_source == "yolo":
+        device = resolve_device(args.yolo_device)
+        print(f"Loading YOLO: {args.yolo_model} (device={device}, first run may download weights)...")
+        yolo_model = load_yolo(args.yolo_model)
+        print(
+            "Note: YOLO counts person *boxes*. Dense city-wide shots still won’t match a true headcount; "
+            "tiled mode (--yolo-tile-grid 2+) helps. Try people_source=density for congested scenes."
+        )
+    elif args.people_source == "density":
+        import torch
+
+        from density_counter import ensure_weights, estimate_count as density_estimate_count, load_csrnet
+
+        dev_name = resolve_device(args.yolo_device)
+        torch_device = torch.device("cuda:0" if dev_name == "cuda" else dev_name)
+        w_arg = (args.density_weights or "").strip()
+        if w_arg:
+            wp = Path(w_arg).expanduser()
+            if not wp.is_file():
+                raise SystemExit(f"CSRNet weights not found: {wp}")
+            weights_path = wp
+        else:
+            gid = (args.density_gdrive_id or "").strip() or None
+            weights_path = ensure_weights(gdrive_id=gid)
+        print(f"Loading CSRNet density model from {weights_path} (torch device={torch_device})...")
+        density_model = load_csrnet(weights_path, torch_device)
+        _density_estimate_count = density_estimate_count
+        print(
+            "Density maps are trained on ShanghaiTech; counts on random web video are **relative**, "
+            "not a ground-truth census. Use the same pipeline for trends/alerts, not legal accuracy."
+        )
+
     signal.signal(signal.SIGINT, stop_handler)
     signal.signal(signal.SIGTERM, stop_handler)
 
     producer = build_producer(args.bootstrap_servers, args.producer_linger_ms)
+    max_w = args.yolo_max_width if args.yolo_max_width > 0 else None
+    yolo_dbg = ""
+    if args.people_source == "yolo":
+        yolo_dbg = (
+            f" | yolo conf={args.yolo_conf} imgsz={args.yolo_imgsz} max_w={args.yolo_max_width or 'full'} "
+            f"tiles={args.yolo_tile_grid}x{args.yolo_tile_grid}"
+        )
+    elif args.people_source == "density":
+        yolo_dbg = (
+            f" | density max_side={args.density_max_side} cal={args.density_calibration} "
+            f"multi_scale={args.density_multi_scale}"
+        )
     print(
         f"Video ingest: {path.name} | topic={args.topic} | camera={args.camera_id} | "
-        f"realtime={args.realtime} | video_fps≈{fps:.2f} | ~{sample_fps} evt/s video | stride={stride} frames"
+        f"source={args.people_source} | realtime={args.realtime} | video_fps≈{fps:.2f} | "
+        f"~{sample_fps} evt/s video | stride={stride} frames{yolo_dbg}"
     )
 
     frame_index = 0
@@ -208,19 +340,49 @@ def main() -> None:
                 if sleep_for:
                     time.sleep(sleep_for)
 
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            gray = cv2.GaussianBlur(gray, (21, 21), 0)
-
             if frame_index % stride != 0:
                 continue
 
-            if last_sample_gray is None:
-                last_sample_gray = gray
-                continue
+            density_raw_sum: Optional[float] = None
 
-            score = motion_score(last_sample_gray, gray)
-            last_sample_gray = gray
-            people = score_to_people_count(score, args.motion_scale, args.max_expected_occupancy)
+            if args.people_source == "yolo":
+                assert yolo_model is not None and device is not None
+                people, det_conf = count_people(
+                    yolo_model,
+                    frame,
+                    device=device,
+                    conf=args.yolo_conf,
+                    max_width=max_w,
+                    imgsz=args.yolo_imgsz,
+                    tile_grid=args.yolo_tile_grid,
+                    tile_overlap=args.yolo_tile_overlap,
+                    tile_nms_iou=args.yolo_tile_nms_iou,
+                )
+                conf = det_conf if people > 0 else 0.0
+                ingest_mode = "yolo"
+            elif args.people_source == "density":
+                assert density_model is not None and torch_device is not None
+                people, _cal_sum, density_raw_sum = _density_estimate_count(
+                    density_model,
+                    frame,
+                    device=torch_device,
+                    max_side=args.density_max_side,
+                    calibration=args.density_calibration,
+                    multi_scale=args.density_multi_scale,
+                )
+                conf = _CONF_DENSITY
+                ingest_mode = "csrnet_density"
+            else:
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                gray = cv2.GaussianBlur(gray, (21, 21), 0)
+                if last_sample_gray is None:
+                    last_sample_gray = gray
+                    continue
+                score = motion_score(last_sample_gray, gray)
+                last_sample_gray = gray
+                people = score_to_people_count(score, args.motion_scale, args.max_expected_occupancy)
+                conf = conf_motion
+                ingest_mode = "motion_proxy"
 
             event = make_event(
                 camera_id=args.camera_id,
@@ -228,14 +390,23 @@ def main() -> None:
                 priority=args.priority,
                 max_occ=args.max_expected_occupancy,
                 people_count=people,
-                confidence=conf_motion,
-                ingest_mode="motion_proxy",
+                confidence=conf,
+                ingest_mode=ingest_mode,
             )
+            if density_raw_sum is not None:
+                event["density_raw_sum"] = round(density_raw_sum, 3)
+                event["density_calibration"] = args.density_calibration
             producer.send(args.topic, key=args.camera_id, value=event)
             emitted += 1
-            if emitted % 50 == 0:
+            if emitted % 20 == 0:
                 producer.flush()
-                print(f"Emitted {emitted} events (last people_count={people}, motion_mean={score:.2f})")
+                if args.people_source == "yolo":
+                    extra = f"people={people}"
+                elif args.people_source == "density":
+                    extra = f"people≈{people} raw_sum≈{density_raw_sum:.1f} cal={args.density_calibration}"
+                else:
+                    extra = f"people={people} motion"
+                print(f"Emitted {emitted} events ({extra})")
 
         producer.flush()
     finally:

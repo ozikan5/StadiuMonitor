@@ -88,7 +88,7 @@ python video_ingest/src/main.py --video "data/samples/YOUR_FILE.mp4" --camera-id
 
 Omit `--video` to pick the **first** `data/samples/*.mp4` alphabetically.  
 `--no-realtime` reads the file as fast as possible (good for soaking tests).  
-Tune `--motion-scale` if counts look flat or too wild.
+Default counting uses **YOLOv8** (`--people-source yolo`). For **dense crowds**, use **`--people-source density`**: **CSRNet** integrates a **density map** (trained on ShanghaiTech). On **random web video**, raw `sum(density)` is often in the **same ballpark** as YOLO (~40s–50s) because the model is **out of domain**—not because the two methods agree on truth. We **removed a bad area-scaling bug** that treated head count like it should scale with image pixels. If raw sums stay ~**70** but you trust ~**200–300** people, that ratio is typical for **out-of-domain** video: set **`--density-calibration`** to about **trusted ÷ raw** (e.g. 250÷70 ≈ **3.6**). Also try larger **`--density-max-side`** (e.g. 1536) and **`--density-multi-scale`** (slower). For true accuracy you still need venue-specific calibration or fine-tuning. First run downloads weights via `gdown`; use `--density-weights` to point at a local `.pth`.
 
 ## Kafka configuration (optional)
 
@@ -101,10 +101,16 @@ Used by the simulator, video ingest, and consumer via `shared/kafka_config.py`.
 
 ### Video ingest defaults (zone, max occupancy, etc.)
 
-For the **single-feed** video path, stadium-like fields live in `config/video_ingest.example.json`: `camera_id`, `zone`, `priority`, `max_expected_occupancy`, `sample_fps`, `motion_scale`, `realtime`, `loop`.
+For the **single-feed** video path, stadium-like fields live in `config/video_ingest.example.json`: `camera_id`, `zone`, `priority`, `max_expected_occupancy`, `sample_fps`, `motion_scale`, `realtime`, `loop`, plus **YOLO** / **density** knobs (`people_source`, YOLO fields, and `density_weights`, `density_max_side`, `density_gdrive_id` when using CSRNet).
 
 - Copy to `config/video_ingest.json` for local tweaks (gitignored).
-- Env overrides: `VIDEO_CAMERA_ID`, `VIDEO_ZONE`, `VIDEO_PRIORITY`, `VIDEO_MAX_OCCUPANCY`, `VIDEO_SAMPLE_FPS`, `VIDEO_MOTION_SCALE`, `VIDEO_REALTIME`, `VIDEO_LOOP`.
+- Env overrides: `VIDEO_CAMERA_ID`, `VIDEO_ZONE`, `VIDEO_PRIORITY`, `VIDEO_MAX_OCCUPANCY`, `VIDEO_SAMPLE_FPS`, `VIDEO_MOTION_SCALE`, `VIDEO_REALTIME`, `VIDEO_LOOP`, `VIDEO_PEOPLE_SOURCE`, `VIDEO_YOLO_*`, `VIDEO_YOLO_TILE_*`, `VIDEO_DENSITY_WEIGHTS`, `VIDEO_DENSITY_MAX_SIDE`, `VIDEO_DENSITY_GDRIVE_ID`, `CSRNET_GDRIVE_ID` (default CSRNet file id).
+
+**Mac / Apple Silicon:** default `people_source` is `yolo`. First run downloads `yolov8n.pt` (Ultralytics). `yolo_device=auto` uses **MPS** when available, else CPU. Use `--people-source motion` or lower `sample_fps` if CPU can’t keep up.
+
+**Why person counts can look “very wrong”:** YOLO returns a **box count**, not a true crowd size. On wide or dense scenes (many small/distant figures, overlap), counts are often **much lower** than reality. That’s expected for this detector class—not a bug in Kafka.
+
+**Improvements built in:** **Tiled inference** (`--yolo-tile-grid 2` = 2×2 overlapping crops, merged with NMS) is **on by default** so people appear larger per tile—often closer to what you expect than a single full-frame pass. It’s slower (~4× work for grid 2). To tune further: lower `--yolo-conf` (e.g. `0.12–0.18`), keep `--yolo-max-width 0`, try `--yolo-imgsz 1280` or `1536`, or `yolov8s.pt`. For **accurate** dense-crowd totals you still need **crowd-density** models or calibrated ROI—not a single cityscape detector.
 
 The **multi-camera simulator** still uses `simulator/config/cameras.example.json` (a list of cameras).
 

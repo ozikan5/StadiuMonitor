@@ -6,5 +6,19 @@
   "sample_fps": 2,
   "motion_scale": 6.0,
   "realtime": true,
-  "loop": false
+  "loop": false,
+  "people_source": "yolo",
+  "yolo_model": "yolov8n.pt",
+  "yolo_conf": 0.15,
+  "yolo_max_width": 0,
+  "yolo_imgsz": 1280,
+  "yolo_device": "auto",
+  "yolo_tile_grid": 2,
+  "yolo_tile_overlap": 0.25,
+  "yolo_tile_nms_iou": 0.45,
+  "density_weights": "",
+  "density_max_side": 1280,
+  "density_gdrive_id": "",
+  "density_calibration": 1.0,
+  "density_multi_scale": false
 }
