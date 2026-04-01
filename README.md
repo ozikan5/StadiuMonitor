@@ -1,132 +1,211 @@
 # StadiuMonitor (Phase 1 Scaffold)
 
-Starter framework for simulating stadium camera telemetry with Apache Kafka.
+Kafka-backed telemetry for stadium-style camera events: **synthetic simulation**, **optional MP4 ingest** (YOLO / CSRNet density / motion), and a small consumer for alerts.
 
-This first phase focuses on **synthetic data generation** so you can model many camera feeds and validate ingestion + basic operational logic before integrating real CV pipelines.
+---
 
-## Project Structure
+## Modes at a glance
+
+| Mode | Command | When to use |
+| --- | --- | --- |
+| **Synthetic simulation** | `python simulator/src/main.py …` | Fake `people_count` to load-test Kafka and consumers. Reads `config/cameras.json` if present; otherwise invents cameras. |
+| **Video → Kafka (one file)** | `python video_ingest/src/main.py …` | One MP4, one `camera_id` / zone; same event JSON as the simulator. |
+| **Video → Kafka (registry)** | `python scripts/run_video_feeds.py …` | One `video_ingest` process per camera in `config/cameras.json` that has `feed.type: file`. |
+| **Downstream** | `python consumer/src/main.py` | Subscribe to the topic; prints events and simple over-capacity alerts. |
+| **Camera list** | `python scripts/camera.py …` | Create/edit the registry file (`init`, `add`, `list`, `remove`) — not a Kafka producer. |
+
+Simulation and video ingest **both publish** to the same topic shape; they are **alternatives** for producing events (do not need to run both at once unless you want mixed load).
+
+---
+
+## Project structure
 
 ```text
 .
-├── consumer/
-│   ├── requirements.txt
-│   └── src/main.py
-├── data/
-│   └── samples/          # drop local MP4s here (gitignored)
-├── config/
-│   ├── kafka.example.json        # broker / topic / consumer group
-│   └── video_ingest.example.json # zone, max occupancy, motion tuning (video path)
-├── docs/
-│   └── architecture.md
-├── infra/
-│   └── kafka/
-├── shared/
-│   └── kafka_config.py      # loads Kafka defaults (file + env)
-├── simulator/
-│   ├── config/cameras.example.json
-│   ├── requirements.txt
-│   └── src/
-│       ├── camera_simulator.py
-│       └── main.py
-├── video_ingest/
-│   ├── requirements.txt
-│   └── src/main.py       # optional: MP4 → Kafka (motion proxy until real CV)
-├── scripts/
-│   └── bootstrap.sh
-├── docker-compose.yml
-└── README.md
+├── consumer/src/main.py
+├── config/                    # kafka.example.json, video_ingest.example.json; local overrides gitignored
+├── data/samples/              # local MP4s (gitignored patterns)
+├── shared/                    # kafka_config, video_ingest_config, camera_registry
+├── simulator/src/             # camera_simulator.py (+ main.py wrapper)
+├── video_ingest/src/main.py
+├── scripts/bootstrap.sh, camera.py, run_video_feeds.py
+└── docker-compose.yml
 ```
 
-## What This Gives You
+---
 
-- Local Kafka + Zookeeper via Docker Compose
-- A Python camera simulator that publishes fake events to Kafka
-- Optional **video ingest**: read an MP4 from `data/samples/`, pace like live video, publish the same event shape (motion-based proxy counts until you add a detector)
-- A basic consumer that reads events and raises occupancy alerts
-- A starter event contract and architecture doc for future phases
-
-## Prerequisites
-
-- Docker + Docker Compose
-- Python 3.10+
-
-## Quick Start
-
-1. Bootstrap Python environment and dependencies:
+## Quick start
 
 ```bash
-./scripts/bootstrap.sh
-source .venv/bin/activate
-```
-
-2. Start Kafka infrastructure:
-
-```bash
+./scripts/bootstrap.sh && source .venv/bin/activate
 docker compose up -d
 ```
 
-3. Run the simulator (example: 200 cameras at 50 events/sec):
+**Simulated cameras** (registry optional):
 
 ```bash
-python simulator/src/main.py --camera-count 200 --events-per-second 50
+python simulator/src/main.py --events-per-second 50
+# If config/cameras.json is missing: adds random cameras; use --camera-count N
 ```
 
-4. In another terminal, run the consumer:
+**Consumer** (another terminal):
 
 ```bash
 python consumer/src/main.py
 ```
 
-### Optional: use your MP4 instead of the random simulator
-
-1. Put a file under `data/samples/` (e.g. your 720p clip). Large files stay **local**; `*.mp4` there is gitignored by default.
-2. With Kafka still up and venv active:
+**One video file**:
 
 ```bash
-python video_ingest/src/main.py --video "data/samples/YOUR_FILE.mp4" --camera-id CAM-TIMESQ-001 --zone street-demo
+python video_ingest/src/main.py --video "data/samples/your.mp4" --camera-id CAM-001 --zone demo
 ```
 
-Omit `--video` to pick the **first** `data/samples/*.mp4` alphabetically.  
-`--no-realtime` reads the file as fast as possible (good for soaking tests).  
-Default counting uses **YOLOv8** (`--people-source yolo`). For **dense crowds**, use **`--people-source density`**: **CSRNet** integrates a **density map** (trained on ShanghaiTech). On **random web video**, raw `sum(density)` is often in the **same ballpark** as YOLO (~40s–50s) because the model is **out of domain**—not because the two methods agree on truth. We **removed a bad area-scaling bug** that treated head count like it should scale with image pixels. If raw sums stay ~**70** but you trust ~**200–300** people, that ratio is typical for **out-of-domain** video: set **`--density-calibration`** to about **trusted ÷ raw** (e.g. 250÷70 ≈ **3.6**). Also try larger **`--density-max-side`** (e.g. 1536) and **`--density-multi-scale`** (slower). For true accuracy you still need venue-specific calibration or fine-tuning. First run downloads weights via `gdown`; use `--density-weights` to point at a local `.pth`.
+**Registry-backed video** (after `camera.py add … --video …`):
 
-## Kafka configuration (optional)
+```bash
+python scripts/run_video_feeds.py
+```
 
-Defaults live in `config/kafka.example.json`: **how to reach Kafka** (broker, topic, consumer group, producer `linger_ms`). It does **not** hold per-camera business fields like `max_expected_occupancy`—those belong elsewhere (see below).
+---
 
-- Copy to `config/kafka.json` if you want local overrides without editing the example file (`kafka.json` is gitignored).
-- **Environment variables still override** the file: `KAFKA_BOOTSTRAP_SERVERS`, `KAFKA_TOPIC`, `KAFKA_CONSUMER_GROUP`, `KAFKA_PRODUCER_LINGER_MS`.
+## Configuration files
 
-Used by the simulator, video ingest, and consumer via `shared/kafka_config.py`.
+| File | Role |
+| --- | --- |
+| `config/kafka.example.json` | Bootstrap servers, topic, consumer group, producer `linger_ms`. Copy to `config/kafka.json` for local overrides (gitignored). |
+| `config/video_ingest.example.json` | Defaults for **single-file** video ingest: ids, fps, YOLO/density, realtime/loop. Copy to `config/video_ingest.json` (gitignored). |
+| `config/cameras.json` | Your cameras: `camera_id`, zone, caps, optional `feed` + `ingest`. Managed with `scripts/camera.py` or by hand (gitignored). |
 
-### Video ingest defaults (zone, max occupancy, etc.)
+**Kafka env overrides** (used by simulator, video ingest, consumer): `KAFKA_BOOTSTRAP_SERVERS`, `KAFKA_TOPIC`, `KAFKA_CONSUMER_GROUP`, `KAFKA_PRODUCER_LINGER_MS`.
 
-For the **single-feed** video path, stadium-like fields live in `config/video_ingest.example.json`: `camera_id`, `zone`, `priority`, `max_expected_occupancy`, `sample_fps`, `motion_scale`, `realtime`, `loop`, plus **YOLO** / **density** knobs (`people_source`, YOLO fields, and `density_weights`, `density_max_side`, `density_gdrive_id` when using CSRNet).
+**Video ingest env** (see `shared/video_ingest_config.py` for full list): e.g. `VIDEO_CAMERA_ID`, `VIDEO_ZONE`, `VIDEO_PEOPLE_SOURCE`, `VIDEO_YOLO_*`, `VIDEO_DENSITY_*`, `CSRNET_GDRIVE_ID`.
 
-- Copy to `config/video_ingest.json` for local tweaks (gitignored).
-- Env overrides: `VIDEO_CAMERA_ID`, `VIDEO_ZONE`, `VIDEO_PRIORITY`, `VIDEO_MAX_OCCUPANCY`, `VIDEO_SAMPLE_FPS`, `VIDEO_MOTION_SCALE`, `VIDEO_REALTIME`, `VIDEO_LOOP`, `VIDEO_PEOPLE_SOURCE`, `VIDEO_YOLO_*`, `VIDEO_YOLO_TILE_*`, `VIDEO_DENSITY_WEIGHTS`, `VIDEO_DENSITY_MAX_SIDE`, `VIDEO_DENSITY_GDRIVE_ID`, `CSRNET_GDRIVE_ID` (default CSRNet file id).
+---
 
-**Mac / Apple Silicon:** default `people_source` is `yolo`. First run downloads `yolov8n.pt` (Ultralytics). `yolo_device=auto` uses **MPS** when available, else CPU. Use `--people-source motion` or lower `sample_fps` if CPU can’t keep up.
+## Camera registry
 
-**Why person counts can look “very wrong”:** YOLO returns a **box count**, not a true crowd size. On wide or dense scenes (many small/distant figures, overlap), counts are often **much lower** than reality. That’s expected for this detector class—not a bug in Kafka.
+```bash
+python scripts/camera.py init
+python scripts/camera.py add --id CAM-NORTH-001 --zone north-stand --max-occ 220 --priority high
+python scripts/camera.py add --id CAM-PLAZA-001 --zone plaza --max-occ 300 --video data/samples/clip.mp4
+python scripts/camera.py list
+python scripts/camera.py remove --id CAM-PLAZA-001
+```
 
-**Improvements built in:** **Tiled inference** (`--yolo-tile-grid 2` = 2×2 overlapping crops, merged with NMS) is **on by default** so people appear larger per tile—often closer to what you expect than a single full-frame pass. It’s slower (~4× work for grid 2). To tune further: lower `--yolo-conf` (e.g. `0.12–0.18`), keep `--yolo-max-width 0`, try `--yolo-imgsz 1280` or `1536`, or `yolov8s.pt`. For **accurate** dense-crowd totals you still need **crowd-density** models or calibrated ROI—not a single cityscape detector.
+- Simulator: `--config` defaults to `config/cameras.json` (env: `CAMERA_CONFIG`). If the file is **missing**, synthetic cameras are used (`CAMERA_COUNT` / `--camera-count`). If the file **exists** but has **no cameras**, the simulator exits.
+- `run_video_feeds.py` only spawns processes for cameras with `feed: { "type": "file", "path": "..." }`.
+- Optional per-camera **`ingest`** JSON keys (passed through to `video_ingest` CLI): `people_source`, `density_calibration`, `density_max_side`, `density_multi_scale`, `sample_fps`, `motion_scale`, `max_expected_occupancy`, `priority`, `realtime`, `loop`.
 
-The **multi-camera simulator** still uses `simulator/config/cameras.example.json` (a list of cameras).
+`simulator/config/cameras.example.json` is a **schema example**, not the runtime default path.
 
-## Simulator Configuration
+---
 
-The simulator can load camera metadata from `simulator/config/cameras.example.json`.
+## CLI reference
 
-CLI options:
+### Synthetic simulator — `python simulator/src/main.py`
 
-- `--bootstrap-servers` (default: `localhost:9092`)
-- `--topic` (default: `stadium.camera.events`)
-- `--config` (default: `simulator/config/cameras.example.json`)
-- `--camera-count` (used when no config file exists; default: `50`)
-- `--events-per-second` (default: `20`)
+| Argument | Default | Notes |
+| --- | --- | --- |
+| `--bootstrap-servers` | from `kafka_settings()` | |
+| `--topic` | from kafka config | |
+| `--producer-linger-ms` | from kafka config | Producer batching delay |
+| `--config` | `config/cameras.json` | Env: `CAMERA_CONFIG` |
+| `--camera-count` | `50` | Env: `CAMERA_COUNT`. **Only used if `--config` file is missing.** |
+| `--events-per-second` | `20` | Env: `EVENTS_PER_SECOND` |
 
-## Event Example
+---
+
+### Video ingest — `python video_ingest/src/main.py`
+
+Defaults come from `config/video_ingest*.json` and env unless overridden on the CLI.
+
+#### Connection & I/O
+
+| Argument | Default | Notes |
+| --- | --- | --- |
+| `--video` | `""` → first `data/samples/*.mp4` | Env: `VIDEO_PATH` |
+| `--bootstrap-servers`, `--topic`, `--producer-linger-ms` | kafka config | Same idea as simulator |
+
+#### Stadium metadata (single-feed)
+
+| Argument | Default | Notes |
+| --- | --- | --- |
+| `--camera-id` | video_ingest config | |
+| `--zone` | video_ingest config | |
+| `--priority` | video_ingest config | |
+| `--max-expected-occupancy` | video_ingest config | Used for scaling caps / alerts |
+
+#### Playback
+
+| Argument | Default | Notes |
+| --- | --- | --- |
+| `--sample-fps` | from config | Target events per second of **video timeline** |
+| `--realtime` / `--no-realtime` | from config | Wall clock vs read-as-fast-as-possible |
+| `--loop` / `--no-loop` | from config | Rewind when file ends |
+
+#### Detector: `--people-source`
+
+| Value | Meaning |
+| --- | --- |
+| `yolo` | YOLOv8 person boxes (default). |
+| `density` | CSRNet density map; `sum` scaled by calibration — strong for **dense** crowds, **weak OOD** on random footage. |
+| `motion` | Fast pixel-diff proxy; use `--motion-scale`. |
+
+#### When `people_source=motion`
+
+| Argument | Default | Notes |
+| --- | --- | --- |
+| `--motion-scale` | from config | Maps motion score → `people_count` |
+
+#### When `people_source=yolo`
+
+| Argument | Default | Notes |
+| --- | --- | --- |
+| `--yolo-model` | from config | e.g. `yolov8n.pt` |
+| `--yolo-conf` | from config | Min box confidence |
+| `--yolo-max-width` | from config | `0` = full frame width |
+| `--yolo-imgsz` | from config | Letterbox size (e.g. 1280 for small figures) |
+| `--yolo-device` | `auto` | `auto`, `cpu`, `mps`, `cuda` |
+| `--yolo-tile-grid` | from config | `1` = off; `2` = 2×2 tiles + NMS |
+| `--yolo-tile-overlap` | from config | Fraction of tile size |
+| `--yolo-tile-nms-iou` | from config | Dedupe boxes across tiles |
+
+#### When `people_source=density`
+
+| Argument | Default | Notes |
+| --- | --- | --- |
+| `--density-weights` | from config | Local `.pth`; empty → download via `gdown` |
+| `--density-max-side` | from config | Resize max(h,w) before CSRNet |
+| `--density-gdrive-id` | from config | Weights file id if downloading |
+| `--density-calibration` | from config | Multiply raw density sum (tune OOD vs your venue) |
+| `--density-multi-scale` / `--no-density-multi-scale` | from config | Two-scale average (slower) |
+
+**Practical note:** YOLO counts **boxes**, not a census; wide or dense shots often read low. Tiling and lower `--yolo-conf` help. Density counts are **relative** off-domain; use `density_calibration` and larger `density_max_side` for a better match, not legal ground truth.
+
+---
+
+### Multi-feed launcher — `python scripts/run_video_feeds.py`
+
+| Argument | Default | Notes |
+| --- | --- | --- |
+| `--registry` | `config/cameras.json` | Override registry path |
+| `--dry-run` | off | Print commands only |
+
+---
+
+### Registry tool — `python scripts/camera.py`
+
+| Subcommand | Arguments | Action |
+| --- | --- | --- |
+| `init` | `--force` | Create empty `config/cameras.json`; overwrite if `--force`. |
+| `add` | `--id`, `--zone`, `--max-occ`, `--priority`, `--video` (optional) | Append one camera |
+| `list` | — | Print cameras |
+| `remove` | `--id` | Drop by `camera_id` |
+| `path` | — | Print registry file path |
+
+---
+
+## Event shape (Kafka value)
 
 ```json
 {
@@ -142,15 +221,19 @@ CLI options:
 }
 ```
 
-## Suggested Next Steps (Phase 2+)
+Video ingest may also set `ingest_mode`. See `docs/architecture.md` for pipeline notes.
 
-- Add schema validation (Avro/Protobuf + Schema Registry)
-- Add stream processor for per-zone rolling occupancy
-- Save aggregates to a timeseries or OLAP store
-- Build a staffing recommendation module (rules + ML)
-- Add dashboard + alert integration (Slack/PagerDuty/etc.)
+---
+
+## Suggested next steps (Phase 2+)
+
+- Schema validation (Avro/Protobuf + Schema Registry)
+- Stream processing / per-zone aggregates
+- Timeseries or OLAP storage, dashboards, alerting (Slack/PagerDuty, etc.)
+
+---
 
 ## Notes
 
-- This is intentionally lightweight and simulation-first.
-- `infra/kafka/` is reserved for future broker config and topic bootstrap scripts.
+- `infra/kafka/` is reserved for future broker/topic automation.
+- Consumer has **no CLI flags**; it uses `shared/kafka_config` like the producers.

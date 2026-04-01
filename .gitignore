@@ -36,3 +36,6 @@ config/kafka.json
 
 # Local video ingest overrides (optional copy of video_ingest.example.json)
 config/video_ingest.json
+
+# Camera registry (your real camera definitions — use scripts/camera.py)
+config/cameras.json

@@ -21,7 +21,8 @@ pip install -r consumer/requirements.txt
 pip install -r video_ingest/requirements.txt
 
 echo "Bootstrap complete."
-echo "Start Kafka:    docker compose up -d"
-echo "Run simulator:  python simulator/src/main.py --events-per-second 50 --camera-count 200"
-echo "Run consumer:   python consumer/src/main.py"
-echo "Video → Kafka:  python video_ingest/src/main.py   # uses first data/samples/*.mp4 if --video omitted"
+echo "Start Kafka:       docker compose up -d"
+echo "Cameras (optional): python scripts/camera.py init && python scripts/camera.py add --id CAM-001 --zone demo --max-occ 200"
+echo "Run simulator:     python simulator/src/main.py --events-per-second 50   # uses config/cameras.json if present"
+echo "Run consumer:      python consumer/src/main.py"
+echo "Video → Kafka:     python video_ingest/src/main.py   # or python scripts/run_video_feeds.py for all file feeds in cameras.json"

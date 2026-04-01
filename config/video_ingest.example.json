@@ -19,6 +19,6 @@
   "density_weights": "",
   "density_max_side": 1280,
   "density_gdrive_id": "",
-  "density_calibration": 1.0,
+  "density_calibration": 3.0,
   "density_multi_scale": false
 }

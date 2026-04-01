@@ -23,6 +23,7 @@ from kafka import KafkaProducer
 _REPO = Path(__file__).resolve().parents[2]
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
+from shared.camera_registry import load_cameras as load_registry_file
 from shared.kafka_config import kafka_settings
 
 # So Ctrl+C can exit the loop cleanly instead of hanging mid-batch.
@@ -37,12 +38,21 @@ def stop_handler(signum, frame):
 
 
 def load_cameras(config_path: str, camera_count: int) -> List[Dict[str, Any]]:
-    # If you pass a JSON file, we use that as the list of cameras (zones, caps, etc.).
+    # Prefer your registry: config/cameras.json with {"cameras": [...]} (see scripts/camera.py).
     if config_path and Path(config_path).exists():
-        with open(config_path, "r", encoding="utf-8") as f:
-            return json.load(f)
+        cams = load_registry_file(Path(config_path))
+        if not cams:
+            raise SystemExit(
+                f"No cameras in {config_path}. Add some: python scripts/camera.py add --id CAM-001 ..."
+            )
+        return cams
 
-    # No file? Invent N cameras so you can still run the sim with zero setup.
+    # No file? Invent N cameras (legacy quick test only).
+    print(
+        f"Note: {config_path or 'config'} missing — using random synthetic cameras. "
+        "Create real ones: python scripts/camera.py init && python scripts/camera.py add ...",
+        file=sys.stderr,
+    )
     return [
         {
             "camera_id": f"CAM-{idx:03d}",
@@ -95,7 +105,11 @@ def parse_args() -> argparse.Namespace:
         default=ks["producer_linger_ms"],
         help="Kafka producer batching delay (see shared/kafka_config.py)",
     )
-    parser.add_argument("--config", default=os.getenv("CAMERA_CONFIG", "simulator/config/cameras.example.json"))
+    parser.add_argument(
+        "--config",
+        default=os.getenv("CAMERA_CONFIG", "config/cameras.json"),
+        help="Camera registry JSON (default: config/cameras.json from scripts/camera.py)",
+    )
     parser.add_argument("--camera-count", type=int, default=int(os.getenv("CAMERA_COUNT", "50")))
     parser.add_argument("--events-per-second", type=float, default=float(os.getenv("EVENTS_PER_SECOND", "20")))
     return parser.parse_args()
