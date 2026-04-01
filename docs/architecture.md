@@ -1,35 +1,47 @@
 # Architecture (Phase 1)
 
-## Goal
-Create a streaming backbone that ingests synthetic camera occupancy events at scale.
+## What we’re building
 
-## Components
-- **Kafka**: Event bus for camera telemetry.
-- **Simulator Service**: Produces fake camera events (`stadium.camera.events`).
-- **Consumer Service**: Reads events and performs basic threshold checks.
+A small **streaming spine**: camera-style occupancy events land on Kafka so we can exercise consumers, alerts, and later real analytics—without pretending the first cut is production-grade CV.
 
-## Data Contract (v0)
-Each event currently includes:
-- `event_id`
-- `timestamp` (UTC ISO-8601)
-- `camera_id`
-- `zone`
-- `priority`
-- `people_count`
-- `max_expected_occupancy`
-- `estimated_queue_length`
+## What’s in the loop today
+
+- **Kafka** — single topic for camera-shaped JSON events.
+- **Simulator** — fake counts + metadata when we just need load or plumbing tests.
+- **Video ingest** — optional path from local MP4s into the **same** event shape (motion, YOLO, or density—depending what we care about that day).
+- **Consumer** — reads the topic and does a simple threshold sanity check; the interesting stuff will sit downstream later.
+
+So we’re not locked into “random numbers only” anymore: one repo can behave like **many feeds** or **one file**, but the **contract** stays the same.
+
+## Owning cameras (registry)
+
+We moved away from living out of checked-in examples. There’s a **local registry** (not committed) where we define cameras—zones, caps, priorities, and optionally a file to drive video ingest. The simulator and the multi-feed runner both **prefer that list** when it exists, so we’re not copy-pasting JSON or rediscovering flags every time.
+
+That’s the main “we actually use this day to day” change from the original scaffold.
+
+## Data contract (v0)
+
+Each event roughly has:
+
+- `event_id`, `timestamp` (UTC)
+- `camera_id`, `zone`, `priority`
+- `people_count`, `max_expected_occupancy`, `estimated_queue_length`
 - `detection_confidence`
 
-## Crowd counts (video ingest)
-CSRNet was trained on **ShanghaiTech Part A**. On **other** footage (e.g. downloaded city cams), raw `sum(density)` is often **far below** eyeball or venue counts (2–4× is common). That is mostly **domain gap**, not a Kafka bug.
+Video ingest may add small extras (e.g. how it was produced); the core fields stay stable for the consumer.
 
-**Practical tuning (in order):**
-1. Raise `density_max_side` (e.g. 1280–1536) if CPU/MPS can handle it; try `--density-multi-scale`.
-2. Set **`density_calibration ≈ (your trusted count) / density_raw_sum`** from one representative frame or clip (e.g. 250 ÷ 70 ≈ 3.6). Use the same factor for operational **trends** until you can fine-tune on your venue.
-3. For production accuracy: **ROI crop** (stands only), **fixed camera geometry**, and/or **fine-tuned** density or detector on labeled stadium frames.
+## Crowd counts — expectations
 
-## Next Iterations
-- Add schema registry / versioned schemas (Avro/Protobuf)
-- Add stream processing for zone-level aggregates
-- Persist to OLAP/warehouse for dashboards
-- Add staffing recommendation engine and alert routing
+Dense scenes break naive **box counts**; density models help but they’re **trained on specific data**, so random street footage won’t match “true” headcount. That’s normal—it’s a **sense of load**, not a census—until we calibrate on **our** venue and cameras.
+
+**Real-world check:** On a very busy Times Square–style clip (roughly a few hundred people in frame), everything we tried still sat much lower (on the order of tens to low hundreds). For experiments I nudged CSRNet output with a rough global scale so numbers sat in a believable range; that’s a **hack for demos**, not something to trust across new angles or venues. Longer term it’s ROI, geometry, and/or models tuned on our own frames—not one magic multiplier.
+
+## Where this probably goes next
+
+- Stronger **schemas** and versioning once more than one service cares about the payload.
+- **Zone-level** rollups and a place to **store** them so we’re not inferring ops state from a log tail.
+- Staffing / routing hints on top of that.
+
+---
+
+*Phase 1 is deliberately boring on purpose: Kafka + one shape + a few ways to populate it. Everything interesting hangs off that spine.*
